@@ -92,6 +92,20 @@ func (s *ReturnStmt) stmt() {
 	s.Expr.expr()
 }
 
+// LetsStmt provide multiple statement of let.
+type LetsStmt struct {
+	StmtImpl
+	Lhss     []Expr
+	Operator string
+	Rhss     []Expr
+}
+
+func (s *LetsStmt) stmt() {
+	print("## LetsStmt: \n")
+	rangeExpr(s.Lhss)
+	rangeExpr(s.Rhss)
+}
+
 // utils
 
 func rangeStmt(s []Stmt) {

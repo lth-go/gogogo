@@ -82,27 +82,26 @@ func Run(stmts []parse.Stmt, env *Env) (reflect.Value, error) {
 	rv := NilValue
 	var err error
 	for _, stmt := range stmts {
-		// TODO
-		//if _, ok := stmt.(*parse.BreakStmt); ok {
-		//    return NilValue, BreakError
-		//}
-		// TODO
-		//if _, ok := stmt.(*parse.ContinueStmt); ok {
-		//    return NilValue, ContinueError
-		//}
+		// 语句
 		rv, err = RunSingleStmt(stmt, env)
 		if err != nil {
 			return rv, err
+		}
+
+		if _, ok := stmt.(*parse.BreakStmt); ok {
+			return NilValue, BreakError
+		}
+		if _, ok := stmt.(*parse.ContinueStmt); ok {
+			return NilValue, ContinueError
 		}
 		if _, ok := stmt.(*parse.ReturnStmt); ok {
 			return reflect.ValueOf(rv), ReturnError
 		}
 	}
-	print("=====")
-	print(rv.String())
 	return rv, nil
 }
 
+// RunSingleStmt ...
 func RunSingleStmt(stmt parse.Stmt, env *Env) (reflect.Value, error) {
 	switch stmt := stmt.(type) {
 	case *parse.ExprStmt:
@@ -111,6 +110,38 @@ func RunSingleStmt(stmt parse.Stmt, env *Env) (reflect.Value, error) {
 			return rv, NewError(stmt, err)
 		}
 		return rv, nil
+	case *parse.LetsStmt:
+		rv := NilValue
+		var err error
+		vs := []interface{}{}
+		for _, rhs := range stmt.Rhss {
+			rv, err = invokeExpr(rhs, env)
+			if err != nil {
+				return rv, NewError(rhs, err)
+			}
+			if rv == NilValue {
+				vs = append(vs, nil)
+			} else if rv.IsValid() && rv.CanInterface() {
+				vs = append(vs, rv.Interface())
+			} else {
+				vs = append(vs, nil)
+			}
+		}
+		rvs := reflect.ValueOf(vs)
+		for i, lhs := range stmt.Lhss {
+			if i >= rvs.Len() {
+				break
+			}
+			v := rvs.Index(i)
+			if v.Kind() == reflect.Interface {
+				v = v.Elem()
+			}
+			_, err = invokeLetExpr(lhs, v, env)
+			if err != nil {
+				return rvs, NewError(lhs, err)
+			}
+		}
+		return rvs, nil
 	case *parse.IfStmt:
 		rv, err := invokeExpr(stmt.Condition, env)
 		if err != nil {
@@ -175,7 +206,14 @@ func RunSingleStmt(stmt parse.Stmt, env *Env) (reflect.Value, error) {
 
 			rv, err := Run(stmt.Do, newEnv)
 			if err != nil {
-				// TODO break continue
+				if err == BreakError {
+					err = nil
+					break
+				}
+				if err == ContinueError {
+					err = nil
+					continue
+				}
 				if err == ReturnError {
 					return rv, err
 				}
@@ -199,6 +237,20 @@ func RunSingleStmt(stmt parse.Stmt, env *Env) (reflect.Value, error) {
 		return NilValue, NewStringError(stmt, "unknown statement")
 	}
 }
+func invokeLetExpr(expr parse.Expr, rv reflect.Value, env *Env) (reflect.Value, error) {
+	switch lhs := expr.(type) {
+	case *parse.IdentExpr:
+		if env.Set(lhs.Lit, rv) != nil {
+			if strings.Contains(lhs.Lit, ".") {
+				return NilValue, NewErrorf(expr, "Undefined symbol '%s'", lhs.Lit)
+			}
+			env.Define(lhs.Lit, rv)
+		}
+		return rv, nil
+	default:
+	}
+	return NilValue, NewStringError(expr, "Invalid operation")
+}
 
 //////////////////////////////
 // expr
@@ -206,20 +258,17 @@ func RunSingleStmt(stmt parse.Stmt, env *Env) (reflect.Value, error) {
 func invokeExpr(expr parse.Expr, env *Env) (reflect.Value, error) {
 	switch e := expr.(type) {
 	case *parse.NumberExpr:
-		if strings.Contains(e.Lit, ".") || strings.Contains(e.Lit, "e") {
+		// 浮点数
+		if strings.Contains(e.Lit, ".") {
 			v, err := strconv.ParseFloat(e.Lit, 64)
 			if err != nil {
 				return NilValue, NewError(expr, err)
 			}
 			return reflect.ValueOf(float64(v)), nil
 		}
-		var i int64
-		var err error
-		if strings.HasPrefix(e.Lit, "0x") {
-			i, err = strconv.ParseInt(e.Lit[2:], 16, 64)
-		} else {
-			i, err = strconv.ParseInt(e.Lit, 10, 64)
-		}
+		// 整数
+		i, err := strconv.ParseInt(e.Lit, 10, 64)
+
 		if err != nil {
 			return NilValue, NewError(expr, err)
 		}
@@ -251,15 +300,36 @@ func invokeExpr(expr parse.Expr, env *Env) (reflect.Value, error) {
 		}(e, env))
 		env.Define(e.Name, f)
 		return f, nil
-	//case *parse.LetExpr:
-	//    rv, err := invokeExpr(e.Rhs, env)
-	//    if err != nil {
-	//        return rv, NewError(e, err)
-	//    }
-	//    if rv.Kind() == reflect.Interface {
-	//        rv = rv.Elem()
-	//    }
-	//    return invokeLetExpr(e.Lhs, rv, env)
+	case *parse.LetsExpr:
+		rv := NilValue
+		var err error
+		vs := []interface{}{}
+		for _, rhs := range e.Rhss {
+			rv, err = invokeExpr(rhs, env)
+			if err != nil {
+				return rv, NewError(rhs, err)
+			}
+			if rv.IsValid() && rv.CanInterface() {
+				vs = append(vs, rv.Interface())
+			} else {
+				vs = append(vs, nil)
+			}
+		}
+		rvs := reflect.ValueOf(vs)
+		for i, lhs := range e.Lhss {
+			if i >= rvs.Len() {
+				break
+			}
+			v := rvs.Index(i)
+			if v.Kind() == reflect.Interface {
+				v = v.Elem()
+			}
+			_, err = invokeLetExpr(lhs, v, env)
+			if err != nil {
+				return rvs, NewError(lhs, err)
+			}
+		}
+		return rvs, nil
 	case *parse.BinOpExpr:
 		lhsV := NilValue
 		rhsV := NilValue
@@ -350,129 +420,85 @@ func invokeExpr(expr parse.Expr, env *Env) (reflect.Value, error) {
 			return reflect.ValueOf(false), nil
 		}
 		return reflect.ValueOf(nil), nil
-	//case *parse.CallExpr:
-	//    f := NilValue
+	case *parse.CallExpr:
+		f := NilValue
 
-	//    if e.Func != nil {
-	//        f = e.Func.(reflect.Value)
-	//    } else {
-	//        var err error
-	//        ff, err := env.Get(e.Name)
-	//        if err != nil {
-	//            return f, err
-	//        }
-	//        f = ff
-	//    }
-	//    _, isReflect := f.Interface().(Func)
+		// 判断是否是匿名函数
+		if e.Func != nil {
+			f = e.Func.(reflect.Value)
+		} else {
+			// 奇怪的写法
+			ff, err := env.Get(e.Name)
+			if err != nil {
+				return f, err
+			}
+			f = ff
+		}
 
-	//    args := []reflect.Value{}
-	//    l := len(e.SubExprs)
-	//    for i, expr := range e.SubExprs {
-	//        arg, err := invokeExpr(expr, env)
-	//        if err != nil {
-	//            return arg, NewError(expr, err)
-	//        }
+		// 需要研究反射
+		_, isReflect := f.Interface().(Func)
+		// 形参赋值
+		args := []reflect.Value{}
+		for i, expr := range e.SubExprs {
+			arg, err := invokeExpr(expr, env)
+			if err != nil {
+				return arg, NewError(expr, err)
+			}
 
-	//        if i < f.Type().NumIn() {
-	//            if !f.Type().IsVariadic() {
-	//                it := f.Type().In(i)
-	//                if arg.Kind().String() == "unsafe.Pointer" {
-	//                    arg = reflect.New(it).Elem()
-	//                }
-	//                if arg.Kind() != it.Kind() && arg.IsValid() && arg.Type().ConvertibleTo(it) {
-	//                    arg = arg.Convert(it)
-	//                } else if arg.Kind() == reflect.Func {
-	//                    if _, isFunc := arg.Interface().(Func); isFunc {
-	//                        rfunc := arg
-	//                        arg = reflect.MakeFunc(it, func(args []reflect.Value) []reflect.Value {
-	//                            for i := range args {
-	//                                args[i] = reflect.ValueOf(args[i])
-	//                            }
-	//                            if e.Go {
-	//                                go func() {
-	//                                    rfunc.Call(args)
-	//                                }()
-	//                                return []reflect.Value{}
-	//                            }
-	//                            var rets []reflect.Value
-	//                            for _, v := range rfunc.Call(args)[:it.NumOut()] {
-	//                                rets = append(rets, v.Interface().(reflect.Value))
-	//                            }
-	//                            return rets
-	//                        })
-	//                    }
-	//                } else if !arg.IsValid() {
-	//                    arg = reflect.Zero(it)
-	//                }
-	//            }
-	//        }
-	//        if !arg.IsValid() {
-	//            arg = NilValue
-	//        }
+			if i < f.Type().NumIn() {
+				it := f.Type().In(i)
 
-	//        if !isReflect {
-	//            args = append(args, arg)
-	//        } else {
-	//            if arg.Kind() == reflect.Interface {
-	//                arg = arg.Elem()
-	//            }
-	//            args = append(args, reflect.ValueOf(arg))
-	//        }
-	//    }
-	//    ret := NilValue
-	//    var err error
-	//    fnc := func() {
-	//        defer func() {
-	//            if os.Getenv("ANKO_DEBUG") == "" {
-	//                if ex := recover(); ex != nil {
-	//                    if e, ok := ex.(error); ok {
-	//                        err = e
-	//                    } else {
-	//                        err = errors.New(fmt.Sprint(ex))
-	//                    }
-	//                }
-	//            }
-	//        }()
-	//        if f.Kind() == reflect.Interface {
-	//            f = f.Elem()
-	//        }
-	//        rets := f.Call(args)
-	//        if isReflect {
-	//            ev := rets[1].Interface()
-	//            if ev != nil {
-	//                err = ev.(error)
-	//            }
-	//            ret = rets[0].Interface().(reflect.Value)
-	//        } else {
-	//            for i, expr := range e.SubExprs {
-	//                if ae, ok := expr.(*parse.AddrExpr); ok {
-	//                    if id, ok := ae.Expr.(*parse.IdentExpr); ok {
-	//                        invokeLetExpr(id, args[i].Elem().Elem(), env)
-	//                    }
-	//                }
-	//            }
-	//            if f.Type().NumOut() == 1 {
-	//                ret = rets[0]
-	//            } else {
-	//                var result []interface{}
-	//                for _, r := range rets {
-	//                    result = append(result, r.Interface())
-	//                }
-	//                ret = reflect.ValueOf(result)
-	//            }
-	//        }
-	//    }
-	//    if e.Go {
-	//        go fnc()
-	//        return NilValue, nil
-	//    }
-	//    fnc()
-	//    if err != nil {
-	//        return ret, NewError(expr, err)
-	//    }
-	//    return ret, nil
+				if arg.Kind() != it.Kind() && arg.IsValid() && arg.Type().ConvertibleTo(it) {
+					arg = arg.Convert(it)
+				} else if !arg.IsValid() {
+					arg = reflect.Zero(it)
+				}
+			}
+			if !arg.IsValid() {
+				arg = NilValue
+			}
+
+			if !isReflect {
+				args = append(args, arg)
+			} else {
+				if arg.Kind() == reflect.Interface {
+					arg = arg.Elem()
+				}
+				args = append(args, reflect.ValueOf(arg))
+			}
+		}
+		ret := NilValue
+		var err error
+		fnc := func() {
+			if f.Kind() == reflect.Interface {
+				f = f.Elem()
+			}
+			rets := f.Call(args)
+			if isReflect {
+				ev := rets[1].Interface()
+				if ev != nil {
+					err = ev.(error)
+				}
+				ret = rets[0].Interface().(reflect.Value)
+			} else {
+				if f.Type().NumOut() == 1 {
+					ret = rets[0]
+				} else {
+					var result []interface{}
+					for _, r := range rets {
+						result = append(result, r.Interface())
+					}
+					ret = reflect.ValueOf(result)
+				}
+			}
+		}
+		fnc()
+		if err != nil {
+			return ret, NewError(expr, err)
+		}
+		return ret, nil
 	default:
-		return NilValue, NewStringError(expr, "Unknown expression")
+		return NilValue, NewStringError(expr, "为止的表达式")
 	}
 }
 

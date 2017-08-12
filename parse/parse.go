@@ -64,7 +64,7 @@ func (t *Tree) next() token {
 		t.token[0] = t.lex.nextToken()
 	}
 
-	print(fmt.Sprintf("\n[%v]：(%v, %v)\n", numToken, t.token[t.peekCount].typ, t.token[t.peekCount].val))
+	//print(fmt.Sprintf("\n[%v]：(%v, %v)\n", numToken, t.token[t.peekCount].typ, t.token[t.peekCount].val))
 	numToken++
 	return t.token[t.peekCount]
 }
@@ -161,6 +161,14 @@ func (t *Tree) newContinueStmt() *ContinueStmt {
 
 }
 
+func (t *Tree) newLetsStmt() *LetsStmt {
+	tok := t.peek()
+	stmt := &LetsStmt{}
+	stmt.SetPosition(tok.Position())
+	return stmt
+
+}
+
 //////////////////////////////
 // new expr
 //////////////////////////////
@@ -220,6 +228,13 @@ func (t *Tree) newCallExpr() *CallExpr {
 	return expr
 }
 
+func (t *Tree) newLetsExpr() *LetsExpr {
+	tok := t.peek()
+	expr := &LetsExpr{}
+	expr.SetPosition(tok.Position())
+	return expr
+
+}
 //////////////////////////////
 // ## 语法分析
 //////////////////////////////
@@ -256,7 +271,34 @@ func (t *Tree) parseStmt() Stmt {
 		return n
 	default:
 		n := t.newExprStmt()
-		n.Expr = t.parseExpr()
+
+		letsStmt := t.newLetsStmt()
+
+		newExpr := t.parseExpr()
+
+		// 判断是否是赋值
+		if typ := t.peek().typ; typ == COMMA || typ == EQ {
+
+			letsStmt.Lhss = append(letsStmt.Lhss, newExpr)
+
+			if typ == COMMA {
+				for t.peek().typ == COMMA {
+					t.match(COMMA)
+					newExpr := t.parseExpr()
+					letsStmt.Lhss = append(letsStmt.Lhss, newExpr)
+				}
+			}
+
+			tok := t.match(EQ)
+			letsStmt.Operator = tok.val
+
+			letsStmt.Rhss = t.parseExprList()
+
+			t.match(SEMICOLON)
+			return letsStmt
+		}
+
+		n.Expr = newExpr
 		// 函数后面没分号
 		switch n.Expr.(type) {
 		case *FuncExpr:
@@ -313,6 +355,7 @@ func (t *Tree) parseElif() Stmt {
 
 }
 
+
 // ## FOR
 func (t *Tree) parseFor() Stmt {
 	n := t.newForStmt()
@@ -320,7 +363,7 @@ func (t *Tree) parseFor() Stmt {
 	t.match(FOR)
 
 	if t.peek().typ != SEMICOLON {
-		n.Initial = t.parseExpr()
+		n.Initial = t.parseLetsExpr()
 	}
 	t.match(SEMICOLON)
 
@@ -330,13 +373,30 @@ func (t *Tree) parseFor() Stmt {
 	t.match(SEMICOLON)
 
 	if t.peek().typ != LC {
-		n.After = t.parseExpr()
+		n.After = t.parseLetsExpr()
 	}
 
 	n.Do = t.parseBlock()
 
 	return n
 
+}
+func (t *Tree) parseLetsExpr() Expr {
+	n := t.newLetsExpr()
+
+	newExpr := t.parseExpr()
+
+	n.Lhss = append(n.Lhss, newExpr)
+
+	for t.peek().typ == COMMA {
+		t.match(COMMA)
+
+		newExpr := t.parseExpr()
+		n.Lhss = append(n.Lhss, newExpr)
+	}
+	t.match(EQ)
+	n.Rhss = t.parseExprList()
+	return n
 }
 
 // ## break
@@ -398,7 +458,7 @@ func (t *Tree) parseArgList() []string {
 }
 
 // 实参
-func (t *Tree) parseParameterList() []Expr {
+func (t *Tree) parseExprList() []Expr {
 	l := []Expr{}
 
 	first := t.parseExpr()
@@ -454,25 +514,6 @@ func (t *Tree) parseExpr() Expr {
 		return expr
 	}
 
-	// 赋值
-	if t.peek().typ == IDENTI && t.peek2().typ == EQ {
-		expr := t.newBinOpExpr()
-
-		token := t.match(IDENTI)
-		LExpr := t.newIdentExpr()
-		LExpr.Lit = token.val
-
-		expr.Lhs = LExpr
-
-		expr.Operator = t.peek().val
-
-		t.match(EQ)
-
-		expr.Rhs = t.parseExpr()
-
-		return expr
-	}
-
 	expr := t.parseLogicalOrExp()
 
 	return expr
@@ -518,7 +559,7 @@ func (t *Tree) parseEqualityExp() Expr {
 	lExpr := t.parseRelationalExp()
 
 	switch typ := t.peek().typ; typ {
-	case EQ, NEQ:
+	case EQEQ, NEQ:
 		expr.Lhs = lExpr
 		expr.Operator = t.peek().val
 
@@ -613,7 +654,7 @@ func (t *Tree) parsePrimaryExp() Expr {
 
 		// identifier
 		if t.peek2().typ != LP {
-			expr := t.newStringExpr()
+			expr := t.newIdentExpr()
 			expr.Lit = t.match(IDENTI).val
 			return expr
 		}
@@ -625,7 +666,7 @@ func (t *Tree) parsePrimaryExp() Expr {
 		t.match(LP)
 
 		if t.peek().typ != RP {
-			expr.SubExprs = t.parseParameterList()
+			expr.SubExprs = t.parseExprList()
 		}
 		t.match(RP)
 		return expr

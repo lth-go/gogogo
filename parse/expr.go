@@ -91,7 +91,10 @@ type FuncExpr struct {
 
 func (e *FuncExpr) expr() {
 	print("* FuncExpr: ", e.Name, "\n")
-	print("** Args:", e.Args, "\n")
+	print("** Args:", "\n")
+	for _, arg := range e.Args {
+		print("***: ",arg, "\n")
+	}
 	rangeStmt(e.Stmts)
 }
 
@@ -113,6 +116,14 @@ func (e *CallExpr) expr() {
 type ConstExpr struct {
 	ExprImpl
 	Value string
+}
+
+// LetsExpr provide multiple expression of let.
+type LetsExpr struct {
+	ExprImpl
+	Lhss     []Expr
+	Operator string
+	Rhss     []Expr
 }
 
 // utils
